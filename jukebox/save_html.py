@@ -73,9 +73,10 @@ def _save_item_html(item_dir, item_id, item_name, data):
 
         # Audio
         wav_src = f'audio.wav'
+        wav = np.transpose(wav)
+        print(f"Changed _save_item_html wav shape to {wav.shape}")
         soundfile.write(f'{item_dir}/{wav_src}', wav, samplerate=sr, format='wav')
         print(f"<audio id='{wav_src}' src='{wav_src}' style='width: 100%;' controls></audio>", file=html)
-
 
         # Labels and Lyrics
         print(f"<pre style='white-space: pre-wrap;'>", end="", file=html)

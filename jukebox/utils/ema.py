@@ -4,6 +4,10 @@ import numpy as np
 
 # EMA always in float, as accumulation needs lots of bits
 class EMA:
+    """
+    Exponential moving average
+    https://www.zijianhu.com/post/pytorch/ema/
+    """
     def __init__(self, params, mu=0.999):
         self.mu = mu
         self.state = [(p, self.get_model_state(p)) for p in params if p.requires_grad]
@@ -12,8 +16,17 @@ class EMA:
         return p.data.float().detach().clone()
 
     def step(self):
+        """
+        This overload of add_ is deprecated:
+            add_(Number alpha, Tensor other)
+        Consider using one of the following signatures instead:
+                add_(Tensor other, *, Number alpha)
+        :return:
+        """
         for p, state in self.state:
             state.mul_(self.mu).add_(1 - self.mu, p.data.float())
+            # print(f"p.data.float()) {p.data.float().shape}")
+            # state.mul_(self.mu).add_(p.data.float(), alpha=1 - self.mu)
 
     def swap(self):
         # swap ema and model params
@@ -55,6 +68,7 @@ class CPUEMA:
 
 class FusedEMA:
     def __init__(self, params, mu=0.999):
+
         self.mu = mu
         params = list(params)
         self.params = {}
@@ -74,8 +88,16 @@ class FusedEMA:
         #     return _flatten_dense_tensors([p.data for p in self.param_group])
 
     def step(self):
+        """
+        This overload of add_ is deprecated:
+            add_(Number alpha, Tensor other)
+        Consider using one of the following signatures instead:
+                add_(Tensor other, *, Number alpha)
+        :return:
+        """
         for group in self.groups:
-            self.state[group].mul_(self.mu).add_(1 - self.mu, self.get_model_state(group))
+            # self.state[group].mul_(self.mu).add_(1 - self.mu, self.get_model_state(group))
+            self.state[group].mul_(self.mu).add_(self.get_model_state(group), alpha=1 - self.mu)
 
     def swap(self):
         # swap ema and model params

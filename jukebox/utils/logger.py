@@ -5,8 +5,12 @@ from datetime import date
 import os
 import sys
 
-def def_tqdm(x):
-    return tqdm(x, leave=True, file=sys.stdout, bar_format="{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]")
+def def_tqdm(x, disable=True):
+    return tqdm(x,
+                leave=False,  # True
+                file=sys.stdout,
+                disable=disable,
+                bar_format="{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]")
 
 def get_range(x):
     if dist.get_rank() == 0:
@@ -95,8 +99,16 @@ class Logger:
         if self.rank == 0:
             for i in range(min(len(auds), max_log)):
                 if max_len:
-                    self.sw.add_audio(f"{i}/{tag}", auds[i][:max_len * sample_rate], self.iters, sample_rate)
+                    # print(f"max_len is {max_len}")
+                    # print(f"auds {auds.shape}")
+                    # print(f"auds[i] {auds[i].shape}")
+                    # print(f"auds[i][:max_len * sample_rate] {auds[i][:max_len * sample_rate].shape}")
+
+                    data = auds[i][:max_len * sample_rate].permute(1, 0)
+                    # print(f"data {data}")
+                    self.sw.add_audio(f"{i}/{tag}", data, self.iters, sample_rate)
                 else:
+                    print(f"auds[i] {auds[i]}")
                     self.sw.add_audio(f"{i}/{tag}", auds[i], self.iters, sample_rate)
 
     def add_audio(self, tag, aud, sample_rate=22050):

@@ -2,11 +2,14 @@ import numpy as np
 import torch as t
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 from jukebox.transformer.ops import filter_logits
 from jukebox.transformer.transformer import Transformer
 from jukebox.utils.logger import get_range
 from jukebox.utils.torch_utils import empty_cache
+from jukebox.prior.conditioners import SimpleEmbedding
+
 
 def get_normal(*shape, std=0.01):
     w = t.empty(shape)
@@ -62,17 +65,27 @@ class ConditionalAutoregressive2D(nn.Module):
         self.width = width
         self.depth = depth
 
+        print(f"ConditionalAutoregressive2D attn_dropout {attn_dropout}, resid_dropout {resid_dropout}, emb_dropout {emb_dropout}")
+
+        # print(f"ConditionalAutoregressive2D input_shape {input_shape}") == (188,)
+
         self.x_emb = nn.Embedding(bins, width)
         nn.init.normal_(self.x_emb.weight, std=0.02 * init_scale)
         self.x_emb_dropout = nn.Dropout(emb_dropout)
+
         self.y_cond = y_cond
         self.x_cond = x_cond
         if not y_cond:
             self.start_token = nn.Parameter(get_normal(1, width, std=0.01 * init_scale))
 
-        self.pos_emb = PositionEmbedding(input_shape=input_shape, width=width, init_scale=init_scale, pos_init=pos_init)
-        self.pos_emb_dropout = nn.Dropout(emb_dropout)
+        self.y_emb = SimpleEmbedding(bins, width, init_scale)
 
+        self.pos_emb = PositionEmbedding(input_shape=input_shape, width=width, init_scale=init_scale, pos_init=pos_init)
+        # self.pos_emb_dropout = nn.Dropout(emb_dropout)
+        print(f"ConditionalAutoregressive2D set pos_emb_dropout to zero")
+        self.pos_emb_dropout = nn.Dropout(0)
+
+        print(f"blocks {blocks}, attn_dropout {attn_dropout}, resid_dropout {resid_dropout}, depth {depth}, emb_dropout {emb_dropout}")
         self.transformer = Transformer(n_in=width, n_ctx=input_dims, n_head=heads, n_depth=depth,
                                        attn_dropout=attn_dropout, resid_dropout=resid_dropout,
                                        afn='quick_gelu', scale=True, mask=mask,
@@ -84,6 +97,7 @@ class ConditionalAutoregressive2D(nn.Module):
 
         self.only_encode = only_encode
         self.prime_len = prime_len
+        # print(f"ConditionalAutoregressive2D prime_len is {prime_len}")  == None
         if merged_decoder:
             # Merged piped model uses this setup
             self.add_cond_after_transformer = False
@@ -94,6 +108,7 @@ class ConditionalAutoregressive2D(nn.Module):
 
         if not only_encode:
             self.x_out = nn.Linear(width, bins, bias=False)
+            print(f"autoregressive.py self.x_out width {width}, bins {bins}")
             if self.share_x_emb_x_out:
                 self.x_out.weight = self.x_emb.weight
             self.loss = t.nn.CrossEntropyLoss()
@@ -116,15 +131,21 @@ class ConditionalAutoregressive2D(nn.Module):
     def forward(self, x, x_cond=None, y_cond=None, encoder_kv=None, fp16=False, loss_full=False,
                 encode=False, get_preds=False, get_acts=False, get_sep_loss=False):
         # Preprocess.
+        # print(f"autoregressive forward x.shape {x.shape}")
         with t.no_grad():
+            # print(f"autoregressive.py forward x {x.shape}")  # torch.Size([16, 188]) / torch.Size([32, 896])
             x = self.preprocess(x)
-
+            # print(f"autoregressive.py forward x {x.shape}")  # torch.Size([16, 188]) / torch.Size([32, 896])
+        # print(f"self.bins {self.bins}")  # 512
         N, D = x.shape
         assert isinstance(x, t.cuda.LongTensor)
         assert (0 <= x).all() and (x < self.bins).all()
 
+        # print(f"autoregressive forward self.y_cond {self.y_cond} self.x_cond {self.x_cond}") == False
         if self.y_cond:
+            # y_cond = self.y_emb(y_cond)
             assert y_cond is not None
+            print(f"N {N}, self.width {self.width}, y_cond.shape {y_cond.shape}")
             assert y_cond.shape == (N, 1, self.width)
         else:
             assert y_cond is None
@@ -136,36 +157,95 @@ class ConditionalAutoregressive2D(nn.Module):
             assert x_cond is None
             x_cond = t.zeros((N, 1, self.width), device=x.device, dtype=t.float)
 
+        # print(f"autoregressive Target x {x.shape}")
         x_t = x # Target
         x = self.x_emb(x) # X emb
+        # print(f"self.x_emb(x).shape {x.shape}")
         x = roll(x, 1) # Shift by 1, and fill in start token
+        # print(f"roll(x, 1).shape {x.shape}")
         if self.y_cond:
+            print(f"x[:,0] = y_cond.view(N, self.width) {y_cond.view(N, self.width).shape}")
             x[:,0] = y_cond.view(N, self.width)
         else:
+            # print(f"x[:,0] = self.start_token {self.start_token.shape}")  # torch.Size([1, 1024]) or torch.Size([1, 128])
             x[:,0] = self.start_token
 
-        x = self.x_emb_dropout(x) + self.pos_emb_dropout(self.pos_emb()) + x_cond # Pos emb and dropout
+        # print(f"New forward autoregressive forward x.shape {x.shape}")
+        # print(f"autoregressive forward x = {self.x_emb_dropout(x).shape} + {self.pos_emb_dropout(self.pos_emb()).shape} + {x_cond.shape}")
 
-        x = self.transformer(x, encoder_kv=encoder_kv, fp16=fp16) # Transformer
+        """
+        self.x_emb = nn.Embedding(bins, width)
+        nn.init.normal_(self.x_emb.weight, std=0.02 * init_scale)
+        self.x_emb_dropout = nn.Dropout(emb_dropout)
+        x = self.x_emb_dropout(x)
+        """
+
+
+        x = self.x_emb_dropout(x) + self.pos_emb_dropout(self.pos_emb()) + x_cond # Pos emb and dropout
+        # print(f"autoregressive forward x.shape after positional embedding {x.shape}")  torch.Size([16, 188, 128])
+
+        # if encoder_kv is not None:
+            # print(f"transformer x {x.shape} encoder_kv {encoder_kv.shape}") # == transformer x torch.Size([16, 3584, 1024]) encoder_kv torch.Size([16, 188, 1024])
+            # print(f"encoder_kv {encoder_kv}")
+        x = self.transformer(x, encoder_kv=encoder_kv, fp16=fp16)  # Transformer
+
+        # print(f"autoregressive forward x.shape after transformer {x.shape}")  # torch.Size([16, 188, 128]) or torch.Size([16, 3584, 1024])
+
         if self.add_cond_after_transformer: # Piped doesnt add x_cond
             x = x + x_cond
 
         acts = x
         if self.only_encode:
             return x
+
+        # print(f"before linear x {x.shape}")
         x = self.x_out(x) # Predictions
+        # print(f"after linear x {x.shape}")
 
         if get_sep_loss:
+            print(f"get_sep_loss {get_sep_loss}, self.prime_len {self.prime_len}")
             assert self.prime_len is not None
             x_prime = x[:, :self.prime_len].reshape(-1, self.bins)
             x_gen = x[:, self.prime_len:].reshape(-1, self.bins)
+            print(f"autoregressive.py self.prime_len {self.prime_len}, x_prime {x_prime.shape}, x_gen {x_gen.shape}")
 
             prime_loss = F.cross_entropy(x_prime, x_t[:, :self.prime_len].reshape(-1)) / np.log(2.)
             gen_loss = F.cross_entropy(x_gen, x_t[:, self.prime_len:].reshape(-1)) / np.log(2.)
 
             loss = (prime_loss, gen_loss) # Note order! Prime is first
         else:
+            # print(f"Plot loss of each predicted z in time")
+            # print(f"autoregressive.py x {x.shape}, x_t {x_t.shape}")
+            # print(f"autoregressive.py x.view(-1, self.bins) {x.view(-1, self.bins).shape}, x_t.view(-1) {x_t.view(-1).shape}")
             loss = F.cross_entropy(x.view(-1, self.bins), x_t.view(-1)) / np.log(2.)  # Loss
+
+            ######
+            # Plot cross-entropy loss of a single batch as a function of time step
+            #if get_preds:
+                # x_plot = x[0,:,:]
+                # xt_plot = x_t[0,:]
+                # print(f"x_plot {x_plot.shape}, xt_plot {xt_plot.shape}")
+            """
+            y_losses = []
+            for i in range(x.shape[1]):
+                #print(f"x_plot[i,:] {x_plot[i,:]}, i {i}")
+                # print(f"xt_plot[i] {xt_plot[i]}")
+                y_loss = F.cross_entropy(x[:, i,:], x_t[:, i]) / np.log(2.)
+                y_losses.append(y_loss.cpu().detach().numpy())
+            # print(f"y_losses {y_losses}")
+
+            x = np.arange(len(y_losses))
+            # print(f"Our plot has {x} dimension in x-axis")
+            fig = plt.figure()
+            plt.plot(x, y_losses)
+            plt.xlabel("Time step")
+            plt.ylabel("Cross-entropy loss")
+            # plt.colorbar()
+            plt.savefig(f'logs_prior/single_prior_70M/loss_per_sequence.png', dpi=fig.dpi)
+            # plt.savefig(f'{hps.local_logdir}/{hps.name}/sample_wav.png', dpi=fig.dpi)
+            plt.close(fig)
+            """
+            ######
 
         if get_preds:
             return loss, x
@@ -198,10 +278,13 @@ class ConditionalAutoregressive2D(nn.Module):
 
     def sample(self, n_samples, x_cond=None, y_cond=None, encoder_kv=None, fp16=False, temp=1.0, top_k=0, top_p=0.0,
                get_preds=False, sample_tokens=None):
-        assert self.training == False
+        # assert self.training == False
+        print(f"Following Tacotron: Removing assert self.training == False")
 
         if sample_tokens is None: sample_tokens=self.input_dims
         N, D = n_samples, self.input_dims
+
+        print(f"autoregressive self.y_cond {self.y_cond}, self.x_cond {self.x_cond}, y_cond {y_cond}, x_cond {x_cond}")
         if self.y_cond:
             assert y_cond is not None
             assert y_cond.shape == (N, 1, self.width)
@@ -219,10 +302,14 @@ class ConditionalAutoregressive2D(nn.Module):
             xs, x = [], None
             if get_preds:
                 preds = []
+            # print(f"autoregressive.py sample")
             for sample_t in get_range(range(0, sample_tokens)):
                 x, cond = self.get_emb(sample_t, n_samples, x, x_cond, y_cond)
+                # print(f"autoregssive.py sample_t {sample_t} sample x {x.shape} cond {cond.shape} encoder_kv {encoder_kv.shape}")
+                # autoregssive.py sample_t 0 sample x torch.Size([1, 1, 1024]) cond torch.Size([1, 1, 1024]) encoder_kv torch.Size([1, 188, 1024])
                 self.transformer.check_cache(n_samples, sample_t, fp16)
                 x = self.transformer(x, encoder_kv=encoder_kv, sample=True, fp16=fp16) # Transformer
+                # print(f"After self.transformer) x.shape {x.shape}") == torch.Size([1, 1, 1024])
                 if self.add_cond_after_transformer:
                     x = x + cond
                 assert x.shape == (n_samples, 1, self.width)
@@ -251,6 +338,8 @@ class ConditionalAutoregressive2D(nn.Module):
     def primed_sample(self, n_samples, x, x_cond=None, y_cond=None, encoder_kv=None, fp16=False, temp=1.0, top_k=0,
                       top_p=0.0, get_preds=False, chunk_size=None, sample_tokens=None):
         assert self.training == False
+
+        # x = x.long()
 
         if sample_tokens is None: sample_tokens=self.input_dims
         # Preprocess.
@@ -281,6 +370,8 @@ class ConditionalAutoregressive2D(nn.Module):
             if get_preds:
                 preds = []
 
+            # print(f"Starting autoregressive primed_sample")
+
             # Fill up key/value cache for past context by runing forward pass.
             # We do so in chunks instead of doing the whole past in one forward pass to reduce max memory usage.
             if chunk_size is None:
@@ -294,6 +385,7 @@ class ConditionalAutoregressive2D(nn.Module):
                 xs_prime, conds_prime = [], []
                 for sample_t in range(start, start + current_chunk_size):
                     x_prime, cond_prime = self.get_emb(sample_t, n_samples, x, x_cond, y_cond)
+                    # torch.Size([1, 1, 1024]) torch.Size([1, 1, 1024])
                     x = xs[sample_t]
                     xs_prime.append(x_prime)
                     conds_prime.append(cond_prime)
@@ -306,6 +398,8 @@ class ConditionalAutoregressive2D(nn.Module):
                 del conds_prime
                 if not get_preds:
                     del cond_prime
+
+                # print(f"autoregressive x_prime {x_prime.shape} encoder_kv {encoder_kv.shape}")
                 x_prime = self.transformer(x_prime, encoder_kv=encoder_kv, sample=True, fp16=fp16)
 
                 if get_preds:

@@ -1,6 +1,6 @@
 import torch as t
 import numpy as np
-from jukebox.data.artist_genre_processor import ArtistGenreProcessor
+# from jukebox.data.artist_genre_processor import ArtistGenreProcessor
 from jukebox.data.text_processor import TextProcessor
 
 # Linear window heurisic to get a window of lyric_tokens
@@ -26,6 +26,7 @@ class EmptyLabeller():
         return dict(y=y, info=info)
 
     def get_batch_labels(self, metas, device='cpu'):
+        print(f"EmptyLabeller get_batch_labels")
         ys, infos = [], []
         for meta in metas:
             label = self.get_label()
@@ -39,32 +40,35 @@ class EmptyLabeller():
         return dict(y=ys, info=infos)
 
 class Labeller():
-    def __init__(self, max_genre_words, n_tokens, sample_length, v3=False):
-        self.ag_processor = ArtistGenreProcessor(v3)
+    def __init__(self, n_tokens, sample_length, v3=False):
+        #self.ag_processor = ArtistGenreProcessor(v3)
         self.text_processor = TextProcessor(v3)
         self.n_tokens = n_tokens
-        self.max_genre_words = max_genre_words
+        # self.max_genre_words = max_genre_words
         self.sample_length = sample_length
-        self.label_shape = (4 + self.max_genre_words + self.n_tokens, )
+        # self.label_shape = (4 + self.max_genre_words + self.n_tokens, )
+        self.label_shape = (self.n_tokens,)
 
     def get_label(self, artist, genre, lyrics, total_length, offset):
-        artist_id = self.ag_processor.get_artist_id(artist)
-        genre_ids = self.ag_processor.get_genre_ids(genre)
+        #artist_id = self.ag_processor.get_artist_id(artist)
+        #genre_ids = self.ag_processor.get_genre_ids(genre)
+        artist_id = None
+        genre_ids = None
 
         lyrics = self.text_processor.clean(lyrics)
         full_tokens = self.text_processor.tokenise(lyrics)
         tokens, _ = get_relevant_lyric_tokens(full_tokens, self.n_tokens, total_length, offset, self.sample_length)
 
-        assert len(genre_ids) <= self.max_genre_words
-        genre_ids = genre_ids + [-1] * (self.max_genre_words - len(genre_ids))
+        # assert len(genre_ids) <= self.max_genre_words
+        # genre_ids = genre_ids + [-1] * (self.max_genre_words - len(genre_ids))
         y = np.array([total_length, offset, self.sample_length, artist_id, *genre_ids, *tokens], dtype=np.int64)
         assert y.shape == self.label_shape, f"Expected {self.label_shape}, got {y.shape}"
         info = dict(artist=artist, genre=genre, lyrics=lyrics, full_tokens=full_tokens)
         return dict(y=y, info=info)
 
     def get_y_from_ids(self, artist_id, genre_ids, lyric_tokens, total_length, offset):
-        assert len(genre_ids) <= self.max_genre_words
-        genre_ids = genre_ids + [-1] * (self.max_genre_words - len(genre_ids))
+        #assert len(genre_ids) <= self.max_genre_words
+        #genre_ids = genre_ids + [-1] * (self.max_genre_words - len(genre_ids))
         if self.n_tokens > 0:
             assert len(lyric_tokens) == self.n_tokens
         else:
@@ -74,21 +78,50 @@ class Labeller():
         return y
 
     def get_batch_labels(self, metas, device='cpu'):
+        # print(f"Labeller get_batch_labels")
         ys, infos = [], []
         for meta in metas:
-            label = self.get_label(**meta)
-            y, info = label['y'], label['info']
-            ys.append(y)
-            infos.append(info)
+            # label = self.get_label(**meta)
+            # y, info = label['y'], label['info']
+            lyrics = meta['lyrics']
+            print(f"labels.py get_batch_labels meta['lyrics'] {lyrics}")
+            tokens = self._tokenise_text(lyrics, self.n_tokens)
+            ys.append(tokens)
+            # infos.append(info)
 
-        ys = t.stack([t.from_numpy(y) for y in ys], dim=0).to(device).long()
+        # print(f"ys {ys}")
+        # print(f"[t.from_numpy(y) for y in ys] {[t.from_numpy(y) for y in ys]}")
+
+        ys = t.stack([y for y in ys], dim=0).to(device).long()
         assert ys.shape[0] == len(metas)
-        assert len(infos) == len(metas)
+        # assert len(infos) == len(metas)
         return dict(y=ys, info=infos)
 
+    def _tokenise_text(self, norm_text, n_tokens):
+        lyrics = self.text_processor.clean(norm_text)
+        full_tokens = self.text_processor.tokenise(lyrics)
+        if len(full_tokens) > n_tokens:
+            print(f"full_tokens '{len(full_tokens)} is greater than n_tokens {n_tokens}'")
+        tokens = [0] * (n_tokens - len(full_tokens)) + full_tokens
+        # y = np.array(tokens, dtype=np.int64)
+        y = np.array(tokens, dtype=np.int64)
+        # print(f"_tokenise_text y.shape {y.dtype}")
+        y_torch = t.from_numpy(y)
+        # print(f"_tokenise_text y.shape {y.shape}")
+        return y_torch
+
     def set_y_lyric_tokens(self, ys, labels):
+        """
+        Using one sentence -> we don't need to do this alignment?
+        :param ys:
+        :param labels:
+        :return:
+        """
+        return ys
         info = labels['info']
-        assert ys.shape[0] == len(info)
+        print(f"labels.py set_y_lyric_tokens labels['info'] {labels['info']}")
+        print(f"labels.py set_y_lyric_tokens ys.shape[0] {ys.shape}")
+        # assert ys.shape[0] == len(info)
         if self.n_tokens > 0:
             # total_length, offset, duration):
             tokens_list = []
@@ -96,14 +129,17 @@ class Labeller():
             for i in range(ys.shape[0]):
                 full_tokens = info[i]['full_tokens']
                 total_length, offset, duration = ys[i, 0], ys[i, 1], ys[i, 2]
+                print(f"total_length {total_length}, offset {offset}, duration {duration}")
                 tokens, indices = get_relevant_lyric_tokens(full_tokens, self.n_tokens, total_length, offset, duration)
+                print(f"tokens {tokens}")
+                print(f"indices {indices}")
                 tokens_list.append(tokens)
                 indices_list.append(indices)
             ys[:, -self.n_tokens:] = t.tensor(tokens_list, dtype=t.long, device='cuda')
             return indices_list
         else:
             return None
-
+    """
     def describe_label(self, y):
         assert y.shape == self.label_shape, f"Expected {self.label_shape}, got {y.shape}"
         y = np.array(y).tolist()
@@ -113,6 +149,13 @@ class Labeller():
         genre = self.ag_processor.get_genre(genre_ids)
         lyrics = self.text_processor.textise(tokens)
         return dict(artist=artist, genre=genre, lyrics=lyrics)
+    """
+
+    def describe_label(self, y):
+        assert y.shape == self.label_shape, f"Expected {self.label_shape}, got {y.shape}"
+        y = np.array(y).tolist()
+        lyrics = self.text_processor.textise(y)
+        return dict(lyrics=lyrics)
 
 
 if __name__ == '__main__':

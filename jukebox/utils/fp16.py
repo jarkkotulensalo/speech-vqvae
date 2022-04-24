@@ -103,6 +103,7 @@ def check_overflow(val):
 
 def grad_norm(params, scale, flat=False):
     params = list(params)
+    # print(f"fp16 grad_norm params {params}")
     if flat:
         # Faster but more memory
         fp16_grads = [p.grad for p in params if p.grad is not None and p.data.dtype == torch.float16]
@@ -115,6 +116,7 @@ def grad_norm(params, scale, flat=False):
         grad_norm = 0.0
         for p in params:
             if p.grad is not None:
+                # print(f"p {p}, grad_norm {grad_norm}")
                 grad_norm += p.grad.norm(p=2, dtype=torch.float32)**2
         grad_norm = float(grad_norm**0.5)
     return grad_norm / scale

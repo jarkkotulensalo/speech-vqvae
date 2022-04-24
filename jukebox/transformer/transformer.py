@@ -100,6 +100,7 @@ class Transformer(nn.Module):
         self.encoder_dims = encoder_dims
         self.blocks = blocks
         if blocks is not None:
+            print(f"n_ctx {n_ctx}, blocks {blocks}")
             assert n_ctx % blocks == 0
             self.block_ctx = n_ctx // blocks
         self.prime_len = prime_len
@@ -116,14 +117,16 @@ class Transformer(nn.Module):
                      5: lambda d: [1,4,1,1][d % 4],      # Alternate row, last column, row, row
                      6: lambda d: [1,2,3,6][d % 4],
                      7: lambda d: [*[1,2,3]*5,6][d%16],
-                     8: lambda d: [1,2,3,1,2,3,1,2,3,6][d%10], # Used by separated_enc_dec model with lyrics
+                     8: lambda d: [1,2,3,1,2,3,1,2,3,6][d%10],  # Used by separated_enc_dec model with lyrics
                      9: lambda d: [1,2,3,0][d % 4],
-                     10: lambda d: [*[1,2,3,1,2,3,1,2,3],*[1,2,3,1,2,3,1,2,3,6]*7][d%79], # Used by large separated_enc_dec model with lyrics
+                     10: lambda d: [*[1,2,3,1,2,3,1,2,3],*[1,2,3,1,2,3,1,2,3,6]*7][d%79],  # Used by large separated_enc_dec model with lyrics
                      11: lambda d: [6,6,0][d%3] if d%16 == 15 else [1,2,3][d%3],
-                     12: lambda d: [7,7,0][d%3] if d%16 == 15 else [1,2,3][d%3], # Used by single_enc_dec model with lyrics
+                     12: lambda d: [7,7,0][d%3] if d%16 == 15 else [1,2,3][d%3],  # Used by single_enc_dec model with lyrics
+                     13: lambda d: [1,2,3,6,6,6,6,6,6,6][d%10],  # Used by 70M model with lyrics
                      }[attn_order]
 
-        attn_cycle = {0:1, 1:2, 2:3, 3:2, 4:2, 5:4, 6:4, 7:16, 8:10, 9:4, 10:79, 11:16, 12:16}[attn_order]
+        # attn_cycle = {0:1, 1:2, 2:3, 3:2, 4:2, 5:4, 6:4, 7:16, 8:10, 9:4, 10:79, 11:16, 12:16}[attn_order]
+        attn_cycle = {0: 1, 1: 2, 2: 3, 3: 2, 4: 2, 5: 4, 6: 4, 7: 16, 8: 10, 9: 4, 10: 79, 11: 16, 12: 16, 13: 10}[attn_order]
         #assert n_depth % attn_cycle == 0, f'Depth {n_depth} not a multiple of cycle {attn_cycle} for attn_order {attn_order}'
 
         attn_block = lambda d: ResAttnBlock(n_in=n_in, n_ctx=n_ctx, n_head=n_head,
@@ -138,6 +141,7 @@ class Transformer(nn.Module):
 
         self.checkpoint_res = checkpoint_res
         self._attn_mods = nn.ModuleList()
+        print(f"transformer.py n_depth {n_depth}")
         for d in range(n_depth):
             self._attn_mods.append(attn_block(d))
         self.ws = []
@@ -171,6 +175,7 @@ class Transformer(nn.Module):
             x = x.half()
 
         # Blocks
+        # print(f"transformer.py self._attn_mods {len(self._attn_mods)}")
         for i,l in enumerate(self._attn_mods):
             if self.checkpoint_res == 1 and not sample:
                 if l.attn_func == 6:
@@ -187,6 +192,7 @@ class Transformer(nn.Module):
                     x = l(x, encoder_kv=None, sample=sample)
             if l.attn.record_attn:
                 self.ws.append(l.attn.w)
+                # print(f"transformer.py l.attn.w {l.attn.w.shape}")
         if not fp16_out:
             x = x.float()
         return x

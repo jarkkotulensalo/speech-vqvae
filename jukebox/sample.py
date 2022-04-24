@@ -12,6 +12,7 @@ from jukebox.save_html import save_html
 from jukebox.utils.sample_utils import split_batch, get_starts
 from jukebox.utils.dist_utils import print_once
 import fire
+import numpy as np
 
 # Sample a partial window of length<n_ctx with tokens_to_sample new tokens on level=level
 def sample_partial_window(zs, labels, sampling_kwargs, level, prior, tokens_to_sample, hps):
@@ -34,7 +35,7 @@ def sample_single_window(zs, labels, sampling_kwargs, level, prior, start, hps):
     end = start + n_ctx
 
     # get z already sampled at current level
-    z = zs[level][:,start:end]
+    z = zs[level][:, start:end]
 
     if 'sample_tokens' in sampling_kwargs:
         # Support sampling a window shorter than n_ctx
@@ -51,9 +52,11 @@ def sample_single_window(zs, labels, sampling_kwargs, level, prior, start, hps):
     
     # get z_conds from level above
     z_conds = prior.get_z_conds(zs, start, end)
+    print(f"get z_conds from level above sample_single_window prior.z_conds {z_conds}")
 
     # set y offset, sample_length and lyrics tokens
     y = prior.get_y(labels, start)
+    print(f"sample_single_window prior.get_y(labels, start) {y.shape}")
 
     empty_cache()
 
@@ -80,8 +83,10 @@ def sample_single_window(zs, labels, sampling_kwargs, level, prior, start, hps):
 # Sample total_length tokens at level=level with hop_length=hop_length
 def sample_level(zs, labels, sampling_kwargs, level, prior, total_length, hop_length, hps):
     print_once(f"Sampling level {level}")
+    print(f"total_length {total_length}, prior.n_ctx {prior.n_ctx}")
+    prior.n_ctx = np.int(prior.n_ctx)
     if total_length >= prior.n_ctx:
-        for start in get_starts(total_length, prior.n_ctx, hop_length):
+        for start in get_starts(total_length, int(prior.n_ctx), hop_length):
             zs = sample_single_window(zs, labels, sampling_kwargs, level, prior, start, hps)
     else:
         zs = sample_partial_window(zs, labels, sampling_kwargs, level, prior, total_length, hps)
@@ -90,14 +95,21 @@ def sample_level(zs, labels, sampling_kwargs, level, prior, total_length, hop_le
 # Sample multiple levels
 def _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps):
     alignments = None
-    for level in reversed(sample_levels):
+    print(f"_sample sample_levels {sample_levels}")
+    # for level in reversed(sample_levels):
+    print(f"sample.py _sample for level in reversed(sample_levels) did not work with one layer.")
+    for level in sample_levels:
+        if level > 0:
+            print(f"sample.py _sample for level == 1 did not work so skipping.")
+            return zs
+        print(f"_sample level {level}")
         prior = priors[level]
         prior.cuda()
         empty_cache()
 
         # Set correct total_length, hop_length, labels and sampling_kwargs for level
         assert hps.sample_length % prior.raw_to_tokens == 0, f"Expected sample_length {hps.sample_length} to be multiple of {prior.raw_to_tokens}"
-        total_length = hps.sample_length//prior.raw_to_tokens
+        total_length = int(hps.sample_length//prior.raw_to_tokens)
         hop_length = int(hps.hop_fraction[level]*prior.n_ctx)
         zs = sample_level(zs, labels[level], sampling_kwargs[level], level, prior, total_length, hop_length, hps)
 
@@ -105,6 +117,8 @@ def _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps):
         empty_cache()
 
         # Decode sample
+        print(f"zs[level:][0].shape {zs[level:][0].shape}")
+        print(f"_sample start_level {level}")
         x = prior.decode(zs[level:], start_level=level, bs_chunks=zs[level].shape[0])
 
         if dist.get_world_size() > 1:
@@ -114,34 +128,50 @@ def _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps):
         if not os.path.exists(logdir):
             os.makedirs(logdir)
         t.save(dict(zs=zs, labels=labels, sampling_kwargs=sampling_kwargs, x=x), f"{logdir}/data.pth.tar")
+        print(f"_sample logdir {logdir}")
+        print(f"_sample x {x.shape}")
+        print(f"_sample hps.sr {hps.sr}")
+
         save_wav(logdir, x, hps.sr)
+
         if alignments is None and priors[-1] is not None and priors[-1].n_tokens > 0 and not isinstance(priors[-1].labeller, EmptyLabeller):
+            print(f"alignments")
+            print(f"sampling_kwargs[-1]['fp16'] {sampling_kwargs[-1]['fp16']}")
+            print(f"labels[-1] {labels[-1]}")
             alignments = get_alignment(x, zs, labels[-1], priors[-1], sampling_kwargs[-1]['fp16'], hps)
+            print(f"alignments {alignments}")
         save_html(logdir, x, zs, labels[-1], alignments, hps)
+
     return zs
 
 # Generate ancestral samples given a list of artists and genres
 def ancestral_sample(labels, sampling_kwargs, priors, hps):
     sample_levels = list(range(len(priors)))
-    zs = [t.zeros(hps.n_samples,0,dtype=t.long, device='cuda') for _ in range(len(priors))]
+    print(f"ancestral_sample sample_levels {sample_levels}")
+    print(f"len(priors) {len(priors)}")
+    # zs = [t.zeros(hps.n_samples,0,dtype=t.long, device='cuda') for _ in range(len(priors))]
+    zs = [t.zeros(hps.n_samples, 0, dtype=t.long, device='cuda') for _ in range(len(priors) - 1)]
     zs = _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps)
     return zs
 
 # Continue ancestral sampling from previously saved codes
 def continue_sample(zs, labels, sampling_kwargs, priors, hps):
     sample_levels = list(range(len(priors)))
+    print(f"continue_sample sample_levels {sample_levels}")
     zs = _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps)
     return zs
 
 # Upsample given already generated upper-level codes
 def upsample(zs, labels, sampling_kwargs, priors, hps):
     sample_levels = list(range(len(priors) - 1))
+    print(f"upsample sample_levels {sample_levels}")
     zs = _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps)
     return zs
 
 # Prompt the model with raw audio input (dimension: NTC) and generate continuations
 def primed_sample(x, labels, sampling_kwargs, priors, hps):
     sample_levels = list(range(len(priors)))
+    print(f"primed_sample sample_levels {sample_levels}")
     zs = priors[-1].encode(x, start_level=0, end_level=len(priors), bs_chunks=x.shape[0])
     zs = _sample(zs, labels, sampling_kwargs, priors, sample_levels, hps)
     return zs
@@ -189,33 +219,9 @@ def save_samples(model, device, hps, sample_hps):
     # We used different label sets in our models, but you can write the human friendly names here and we'll map them under the hood for each model.
     # For the 5b/5b_lyrics model and the upsamplers, labeller will look up artist and genres in v2 set. (after lowercasing, removing non-alphanumerics and collapsing whitespaces to _).
     # For the 1b_lyrics top level, labeller will look up artist and genres in v3 set (after lowercasing).
-    metas = [dict(artist = "Alan Jackson",
-                  genre = "Country",
-                  lyrics = poems['ozymandias'],
-                  total_length=total_length,
-                  offset=offset,
-                  ),
-             dict(artist="Joe Bonamassa",
-                  genre="Blues Rock",
-                  lyrics=gpt_2_lyrics['hottub'],
-                  total_length=total_length,
-                  offset=offset,
-                  ),
-             dict(artist="Frank Sinatra",
-                  genre="Classic Pop",
-                  lyrics=gpt_2_lyrics['alone'],
-                  total_length=total_length,
-                  offset=offset,
-                  ),
-             dict(artist="Ella Fitzgerald",
-                  genre="Jazz",
-                  lyrics=gpt_2_lyrics['count'],
-                  total_length=total_length,
-                  offset=offset,
-                  ),
-             dict(artist="Céline Dion",
-                  genre="Pop",
-                  lyrics=gpt_2_lyrics['darkness'],
+    metas = [dict(artist="",
+                  genre="",
+                  lyrics="Printing, in the only sense",
                   total_length=total_length,
                   offset=offset,
                   ),
@@ -240,9 +246,12 @@ def save_samples(model, device, hps, sample_hps):
                        dict(temp=0.99, fp16=True, chunk_size=lower_level_chunk_size, max_batch_size=lower_level_max_batch_size),
                        dict(temp=0.99, fp16=True, chunk_size=chunk_size, max_batch_size=max_batch_size)]
 
+    print(f"sample_hps.mode: {sample_hps.mode}")
     if sample_hps.mode == 'ancestral':
+        print(f"Sampling in ancestral mode")
         ancestral_sample(labels, sampling_kwargs, priors, hps)
     elif sample_hps.mode in ['continue', 'upsample']:
+        print(f"Sampling in upsample mode")
         assert sample_hps.codes_file is not None
         top_raw_to_tokens = priors[-1].raw_to_tokens
         if sample_hps.prompt_length_in_seconds is not None:
@@ -255,6 +264,7 @@ def save_samples(model, device, hps, sample_hps):
         elif sample_hps.mode == 'upsample':
             upsample(zs, labels, sampling_kwargs, priors, hps)
     elif sample_hps.mode == 'primed':
+        print(f"Sampling in primed mode")
         assert sample_hps.audio_file is not None
         assert sample_hps.prompt_length_in_seconds is not None
         audio_files = sample_hps.audio_file.split(',')
@@ -274,6 +284,8 @@ def run(model, mode='ancestral', codes_file=None, audio_file=None, prompt_length
 
     with t.no_grad():
         save_samples(model, device, hps, sample_hps)
+
+    print(f"Sampling done.")
 
 if __name__ == '__main__':
     fire.Fire(run)

@@ -18,10 +18,10 @@ MODELS = {
     '5b': ("vqvae", "upsampler_level_0", "upsampler_level_1", "prior_5b"),
     '5b_lyrics': ("vqvae", "upsampler_level_0", "upsampler_level_1", "prior_5b_lyrics"),
     '1b_lyrics': ("vqvae", "upsampler_level_0", "upsampler_level_1", "prior_1b_lyrics"),
-    #'your_model': ("you_vqvae_here", "your_upsampler_here", ..., "you_top_level_prior_here")
+    'single_model': ("single_vqvae", "single_upsampler", "single_prior_70M"),
 }
-
-def load_checkpoint(path):
+"""
+def load_checkpoint_azure(path):
     restore = path
     if restore.startswith(REMOTE_PREFIX):
         remote_path = restore
@@ -37,8 +37,19 @@ def load_checkpoint(path):
     checkpoint = t.load(restore, map_location=t.device('cpu'))
     print("Restored from {}".format(restore))
     return checkpoint
+"""
+
+def load_checkpoint(path):
+    restore = path
+    if not os.path.exists(os.path.dirname(restore)):
+        print(f"restore path not found: {restore}")
+    dist.barrier()
+    checkpoint = t.load(restore, map_location=t.device('cpu'))
+    print("Restored from {}".format(restore))
+    return checkpoint
 
 def save_checkpoint(logger, name, model, opt, metrics, hps):
+
     with t.no_grad():
         save_hps = {**hps}
         save_hps = {k: v for k,v in save_hps.items() if k not in ['metadata_v2','metadata_v3', 'alignments', 'lyric_processor', 'midi_processor']}
@@ -47,19 +58,22 @@ def save_checkpoint(logger, name, model, opt, metrics, hps):
                 'opt': opt.state_dict() if opt is not None else None,
                 'step': logger.iters,
                 **metrics}, f'{logger.logdir}/checkpoint_{name}.pth.tar')
+        print(f"saving model to '{logger.logdir}/checkpoint_{name}.pth.tar'")
     return
 
 def restore_model(hps, model, checkpoint_path):
     model.step = 0
     if checkpoint_path != '':
         checkpoint = load_checkpoint(checkpoint_path)
-        # checkpoint_hps = Hyperparams(**checkpoint['hps'])
-        # for k in set(checkpoint_hps.keys()).union(set(hps.keys())):
-        #     if checkpoint_hps.get(k, None) != hps.get(k, None):
-        #         print(k, "Checkpoint:", checkpoint_hps.get(k, None), "Ours:", hps.get(k, None))
+        checkpoint_hps = Hyperparams(**checkpoint['hps'])
+        print(f"checkpoint_hps {checkpoint_hps}")
+        for k in set(checkpoint_hps.keys()).union(set(hps.keys())):
+            if checkpoint_hps.get(k, None) != hps.get(k, None):
+                print(k, "Checkpoint:", checkpoint_hps.get(k, None), "Ours:", hps.get(k, None))
         checkpoint['model'] = {k[7:] if k[:7] == 'module.' else k: v for k, v in checkpoint['model'].items()}
         model.load_state_dict(checkpoint['model'])
-        if 'step' in checkpoint: model.step = checkpoint['step']
+        if 'step' in checkpoint:
+            model.step = checkpoint['step']
 
 def restore_opt(opt, shd, checkpoint_path):
     if not checkpoint_path:
@@ -84,11 +98,19 @@ def make_vqvae(hps, device='cuda'):
         hps.sample_length = (hps.sample_length_in_seconds * hps.sr // top_raw_to_tokens) * top_raw_to_tokens
         print(f"Setting sample length to {hps.sample_length} (i.e. {hps.sample_length/hps.sr} seconds) to be multiple of {top_raw_to_tokens}")
 
-    vqvae = VQVAE(input_shape=(hps.sample_length,1), levels=hps.levels, downs_t=hps.downs_t, strides_t=hps.strides_t,
-                  emb_width=hps.emb_width, l_bins=hps.l_bins,
-                  mu=hps.l_mu, commit=hps.commit,
-                  spectral=hps.spectral, multispectral=hps.multispectral,
-                  multipliers=hps.hvqvae_multipliers, use_bottleneck=hps.use_bottleneck,
+    vqvae = VQVAE(input_shape=(hps.sample_length,1),
+                  levels=hps.levels,
+                  downs_t=hps.downs_t,
+                  strides_t=hps.strides_t,
+                  emb_width=hps.emb_width,
+                  l_bins=hps.l_bins,
+                  mu=hps.l_mu,
+                  commit=hps.commit,
+                  spectral=hps.spectral,
+                  multispectral=hps.multispectral,
+                  multipliers=hps.hvqvae_multipliers,
+                  use_bottleneck=hps.use_bottleneck,
+                  noise_layer_idx=hps.noise_layer_idx,
                   **block_kwargs)
 
     vqvae = vqvae.to(device)
@@ -151,6 +173,10 @@ def make_prior(hps, vqvae, device='cuda'):
     rescale = lambda z_shape: (z_shape[0]*hps.n_ctx//vqvae.z_shapes[hps.level][0],)
     z_shapes = [rescale(z_shape) for z_shape in vqvae.z_shapes]
 
+    print(f"make_prior vqvae.downs_t {vqvae.downs_t}")
+    print(f"make_prior z_shapes {z_shapes}")
+    print(f"make_prior hps.level {hps.level}")
+    print(f"make_prior prior_kwargs {prior_kwargs}")
     prior = SimplePrior(z_shapes=z_shapes,
                         l_bins=vqvae.l_bins,
                         encoder=vqvae.encode,
@@ -184,13 +210,16 @@ def make_prior(hps, vqvae, device='cuda'):
         print_all(f"Loading prior in eval mode")
         prior.eval()
         freeze_model(prior)
+        # print(prior)
     return prior
 
 def make_model(model, device, hps, levels=None):
     vqvae, *priors = MODELS[model]
+    print(priors)
     vqvae = make_vqvae(setup_hparams(vqvae, dict(sample_length=hps.get('sample_length', 0), sample_length_in_seconds=hps.get('sample_length_in_seconds', 0))), device)
     hps.sample_length = vqvae.sample_length
     if levels is None:
+        print(f"levels is None -> len(priors) {len(priors)}")
         levels = range(len(priors))
     priors = [make_prior(setup_hparams(priors[level], dict()), vqvae, 'cpu') for level in levels]
     return vqvae, priors

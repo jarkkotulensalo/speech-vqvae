@@ -87,9 +87,14 @@ class BottleneckBlock(nn.Module):
 
     def preprocess(self, x):
         # NCT -> NTC -> [NT, C]
+        # print(f"Starting Bottleneck preprocess")
+        # print(f"x {x.shape}")
         x = x.permute(0, 2, 1).contiguous()
+        # print(f"after permutate x {x.shape}")
         x = x.view(-1, x.shape[-1])  # x_en = (N * L, w), k_j = (w, k_bins)
+        # print(f"after view x {x.shape}")
 
+        # print(f"self.emb_width {self.emb_width}")
         if x.shape[-1] == self.emb_width:
             prenorm = t.norm(x - t.mean(x)) / np.sqrt(np.prod(x.shape))
         elif x.shape[-1] == 2 * self.emb_width:
@@ -110,6 +115,11 @@ class BottleneckBlock(nn.Module):
         return x_l, x_d
 
     def quantise(self, x):
+        """
+        use different self.k for quantise and dequantise?
+        :param x:
+        :return:
+        """
         # Calculate latent code x_l
         k_w = self.k.t()
         distance = t.sum(x ** 2, dim=-1, keepdim=True) - 2 * t.matmul(x, k_w) + t.sum(k_w ** 2, dim=0,
@@ -136,6 +146,11 @@ class BottleneckBlock(nn.Module):
         return x_l
 
     def decode(self, x_l):
+        """
+        :param x_l: torch.Size([batch_size, hps.n_ctx])
+        :return:
+        """
+        # print(f"bottleneck x_l.shape {x_l.shape}")
         N, T = x_l.shape
         width = self.emb_width
 
@@ -215,9 +230,11 @@ class Bottleneck(nn.Module):
                 metrics.append(metric)
         return zs, xs_quantised, commit_losses, metrics
 
+
 class NoBottleneckBlock(nn.Module):
     def restore_k(self):
         pass
+
 
 class NoBottleneck(nn.Module):
     def __init__(self, levels):
@@ -240,6 +257,7 @@ class NoBottleneck(nn.Module):
         commit_losses = [zero for _ in range(self.levels)]
         metrics = [dict(entropy=zero, usage=zero, used_curr=zero, pn=zero, dk=zero) for _ in range(self.levels)]
         return xs, xs, commit_losses, metrics
+
 
 if __name__ == '__main__':
     from jukebox.utils.dist_utils import setup_dist_from_mpi
