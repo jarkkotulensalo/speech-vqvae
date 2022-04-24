@@ -78,6 +78,12 @@ https://user-images.githubusercontent.com/49818900/164986675-4e64c454-178e-4e8f-
 https://user-images.githubusercontent.com/49818900/164986705-24d45228-012f-4e27-b139-7b43731851fe.mp4
 
 
+Sample from model with only 2 attention heads to the text where the model does not learn to follow the given text but generates sounds freely from the learnt tokens.
+
+
+
+https://user-images.githubusercontent.com/49818900/164988407-ce5048eb-e817-4ff9-86ad-07caaded7696.mp4
+
 
 
 ##  Install
