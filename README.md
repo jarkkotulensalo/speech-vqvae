@@ -9,10 +9,20 @@ Code for Aalto University master's thesis "Learning neural discrete representati
 https://user-images.githubusercontent.com/49818900/164986471-37845368-4b0d-41cd-8331-abad631acd9a.mp4
 
 
-### Best speech sample 
+### Best speech sample - using wider residual networks
 
 
 https://user-images.githubusercontent.com/49818900/164986586-7e10d994-ec80-4a74-998d-2e53001da5f9.mp4
+
+
+
+
+https://user-images.githubusercontent.com/49818900/164986985-95afc9eb-0d91-4e93-b119-ca8d795af5dc.mp4
+
+
+
+https://user-images.githubusercontent.com/49818900/164986986-79e5b97c-fe8b-43b4-88ee-23aa95f78a56.mp4
+
 
 
 
