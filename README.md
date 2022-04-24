@@ -1,30 +1,83 @@
-**Status:** Archive (code is provided as-is, no updates expected)
+# Speech VQVAE
+Code for Aalto University master's thesis "Learning neural discrete representations for speech"
 
-# Jukebox
-Code for "Jukebox: A Generative Model for Music"
+## Speech samples - original and reconstruction
 
-[Paper](https://arxiv.org/abs/2005.00341) 
-[Blog](https://openai.com/blog/jukebox) 
-[Explorer](http://jukebox.openai.com/) 
-[Colab](https://colab.research.google.com/github/openai/jukebox/blob/master/jukebox/Interacting_with_Jukebox.ipynb) 
+### Original speech sample from dataset LJSpeech
 
-# Install
+
+https://user-images.githubusercontent.com/49818900/164986471-37845368-4b0d-41cd-8331-abad631acd9a.mp4
+
+
+### Best speech sample 
+
+
+https://user-images.githubusercontent.com/49818900/164986586-7e10d994-ec80-4a74-998d-2e53001da5f9.mp4
+
+
+
+### Baseline speech-VQVAE
+
+
+
+https://user-images.githubusercontent.com/49818900/164986601-2f22eb4e-a934-4630-9b02-0b54c7e638bb.mp4
+
+
+### Downssampling factor experiment comparison
+
+Downsampling factor of 32
+
+
+
+https://user-images.githubusercontent.com/49818900/164986626-5282c53d-0ac0-436f-8735-3bd9ad45d392.mp4
+
+Downsampling factor of 64
+
+
+https://user-images.githubusercontent.com/49818900/164986637-b448241b-35e1-4ee6-8ae0-0ddb9381c1cd.mp4
+
+Downsampling factor of 128
+
+
+https://user-images.githubusercontent.com/49818900/164986640-1c37e8e0-1b4d-4fbb-8cfd-8978d8d9ea30.mp4
+
+
+Downsampling factor of 256
+
+
+https://user-images.githubusercontent.com/49818900/164986649-bc9b1721-949d-4f45-ad01-f931c6feef76.mp4
+
+
+### Increasing width of the residual network
+
+Width of 64
+
+
+https://user-images.githubusercontent.com/49818900/164986672-6450008c-a57b-4f21-8659-66d29112d314.mp4
+
+Width of 128
+
+
+https://user-images.githubusercontent.com/49818900/164986675-4e64c454-178e-4e8f-a284-b1044cc87ac7.mp4
+
+
+## Text-to-speech Transformer model sample from synthesis
+
+
+
+https://user-images.githubusercontent.com/49818900/164986705-24d45228-012f-4e27-b139-7b43731851fe.mp4
+
+
+
+
+##  Install
 Install the conda package manager from https://docs.conda.io/en/latest/miniconda.html    
     
-``` 
-# Required: Sampling
-conda create --name jukebox python=3.7.5
+conda env create --file env.yml
 conda activate jukebox
 conda install mpi4py=3.0.3 # if this fails, try: pip install mpi4py==3.0.3
 conda install pytorch=1.4 torchvision=0.5 cudatoolkit=10.0 -c pytorch
-git clone https://github.com/openai/jukebox.git
-cd jukebox
-pip install -r requirements.txt
-pip install -e .
-
-# Required: Training
-conda install av=7.0.01 -c conda-forge 
-pip install ./tensorboardX
+git clone https://github.com/jarkkotulensalo/speech-vqvae.git
  
 # Optional: Apex for faster training with fused_adam
 conda install pytorch=1.1 torchvision=0.3 cudatoolkit=10.0 -c pytorch
@@ -98,186 +151,9 @@ Checkpoints are stored in the `logs` folder. You can monitor the training by run
 ```
 tensorboard --logdir logs
 ```
-    
-## Prior
-### Train prior or upsamplers
-Once the VQ-VAE is trained, we can restore it from its saved checkpoint and train priors on the learnt codes. 
-To train the top-level prior, we can run
-
-```
-mpiexec -n {ngpus} python jukebox/train.py --hps=small_vqvae,small_prior,all_fp16,cpu_ema --name=small_prior \
---sample_length=2097152 --bs=4 --audio_files_dir={audio_files_dir} --labels=False --train --test --aug_shift --aug_blend \
---restore_vqvae=logs/small_vqvae/checkpoint_latest.pth.tar --prior --levels=2 --level=1 --weight_decay=0.01 --save_iters=1000
-```
-
-To train the upsampler, we can run
-```
-mpiexec -n {ngpus} python jukebox/train.py --hps=small_vqvae,small_upsampler,all_fp16,cpu_ema --name=small_upsampler \
---sample_length=262144 --bs=4 --audio_files_dir={audio_files_dir} --labels=False --train --test --aug_shift --aug_blend \
---restore_vqvae=logs/small_vqvae/checkpoint_latest.pth.tar --prior --levels=2 --level=0 --weight_decay=0.01 --save_iters=1000
-```
-We pass `sample_length = n_ctx * downsample_of_level` so that after downsampling the tokens match the n_ctx of the prior hps. 
-Here, `n_ctx = 8192` and `downsamples = (32, 256)`, giving `sample_lengths = (8192 * 32, 8192 * 256) = (65536, 2097152)` respectively for the bottom and top level. 
-
-### Learning rate annealing
-To get the best sample quality anneal the learning rate to 0 near the end of training. To do so, continue training from the latest 
-checkpoint and run with
-```
---restore_prior="path/to/checkpoint" --lr_use_linear_decay --lr_start_linear_decay={already_trained_steps} --lr_decay={decay_steps_as_needed}
-```
-
-### Reuse pre-trained VQ-VAE and train top-level prior on new dataset from scratch.
-#### Train without labels
-Our pre-trained VQ-VAE can produce compressed codes for a wide variety of genres of music, and the pre-trained upsamplers 
-can upsample them back to audio that sound very similar to the original audio.
-To re-use these for a new dataset of your choice, you can retrain just the top-level  
-
-To train top-level on a new dataset, run
-```
-mpiexec -n {ngpus} python jukebox/train.py --hps=vqvae,small_prior,all_fp16,cpu_ema --name=pretrained_vqvae_small_prior \
---sample_length=1048576 --bs=4 --aug_shift --aug_blend --audio_files_dir={audio_files_dir} \
---labels=False --train --test --prior --levels=3 --level=2 --weight_decay=0.01 --save_iters=1000
-```
-Training the `small_prior` with a batch size of 2, 4, and 8 requires 6.7 GB, 9.3 GB, and 15.8 GB of GPU memory, respectively. A few days to a week of training typically yields reasonable samples when the dataset is homogeneous (e.g. all piano pieces, songs of the same style, etc).
-
-Near the end of training, follow [this](#learning-rate-annealing) to anneal the learning rate to 0
-
-#### Sample from new model
-You can then run sample.py with the top-level of our models replaced by your new model. To do so,
-- Add an entry `my_model=("vqvae", "upsampler_level_0", "upsampler_level_1", "small_prior")` in `MODELS` in `make_models.py`. 
-- Update the `small_prior` dictionary in `hparams.py` to include `restore_prior='path/to/checkpoint'`. If you
-you changed any hps directly in the command line script (eg:`heads`), make sure to update them in the dictionary too so 
-that `make_models` restores our checkpoint correctly.
-- Run sample.py as outlined in the sampling section, but now with `--model=my_model` 
-
-For example, let's say we trained `small_vqvae`, `small_prior`, and `small_upsampler` under `/path/to/jukebox/logs`. In `make_models.py`, we are going to declare a tuple of the new models as `my_model`.
-```
-MODELS = {
-    '5b': ("vqvae", "upsampler_level_0", "upsampler_level_1", "prior_5b"),
-    '5b_lyrics': ("vqvae", "upsampler_level_0", "upsampler_level_1", "prior_5b_lyrics"),
-    '1b_lyrics': ("vqvae", "upsampler_level_0", "upsampler_level_1", "prior_1b_lyrics"),
-    'my_model': ("my_small_vqvae", "my_small_upsampler", "my_small_prior"),
-}
-```
-
-Next, in `hparams.py`, we add them to the registry with the corresponding `restore_`paths and any other command line options used during training. Another important note is that for top-level priors with lyric conditioning, we have to locate a self-attention layer that shows alignment between the lyric and music tokens. Look for layers where `prior.prior.transformer._attn_mods[layer].attn_func` is either 6 or 7. If your model is starting to sing along lyrics, it means some layer, head pair has learned alignment. Congrats!
-```
-my_small_vqvae = Hyperparams(
-    restore_vqvae='/path/to/jukebox/logs/small_vqvae/checkpoint_some_step.pth.tar',
-)
-my_small_vqvae.update(small_vqvae)
-HPARAMS_REGISTRY["my_small_vqvae"] = my_small_vqvae
-
-my_small_prior = Hyperparams(
-    restore_prior='/path/to/jukebox/logs/small_prior/checkpoint_latest.pth.tar',
-    level=1,
-    labels=False,
-    # TODO For the two lines below, if `--labels` was used and the model is
-    # trained with lyrics, find and enter the layer, head pair that has learned
-    # alignment.
-    alignment_layer=47,
-    alignment_head=0,
-)
-my_small_prior.update(small_prior)
-HPARAMS_REGISTRY["my_small_prior"] = my_small_prior
-
-my_small_upsampler = Hyperparams(
-    restore_prior='/path/to/jukebox/logs/small_upsampler/checkpoint_latest.pth.tar',
-    level=0,
-    labels=False,
-)
-my_small_upsampler.update(small_upsampler)
-HPARAMS_REGISTRY["my_small_upsampler"] = my_small_upsampler
-```
-
-#### Train with labels 
-To train with you own metadata for your audio files, implement `get_metadata` in `data/files_dataset.py` to return the 
-`artist`, `genre` and `lyrics` for a given audio file. For now, you can pass `''` for lyrics to not use any lyrics.
-
-For training with labels, we'll use `small_labelled_prior` in `hparams.py`, and we set `labels=True,labels_v3=True`. 
-We use 2 kinds of labels information:
-- Artist/Genre: 
-  - For each file, we return an artist_id and a list of genre_ids. The reason we have a list and not a single genre_id 
-  is that in v2, we split genres like `blues_rock` into a bag of words `[blues, rock]`, and we pass atmost 
-  `max_bow_genre_size` of those, in `v3` we consider it as a single word and just set `max_bow_genre_size=1`.
-  - Update the `v3_artist_ids` and `v3_genre_ids` to use ids from your new dataset. 
-  - In `small_labelled_prior`, set the hps `y_bins = (number_of_genres, number_of_artists)` and `max_bow_genre_size=1`. 
-- Timing: 
-  - For each chunk of audio, we return the `total_length` of the song, the `offset` the current audio chunk is at and 
-  the `sample_length` of the audio chunk. We have three timing embeddings: total_length, our current position, and our 
-  current position as a fraction of the total length, and we divide the range of these values into `t_bins` discrete bins. 
-  - In `small_labelled_prior`, set the hps `min_duration` and `max_duration` to be the shortest/longest duration of audio 
-  files you want for your dataset, and `t_bins` for how many bins you want to discretize timing information into. Note 
-  `min_duration * sr` needs to be at least `sample_length` to have an audio chunk in it.
-
-After these modifications, to train a top-level with labels, run
-```
-mpiexec -n {ngpus} python jukebox/train.py --hps=vqvae,small_labelled_prior,all_fp16,cpu_ema --name=pretrained_vqvae_small_prior_labels \
---sample_length=1048576 --bs=4 --aug_shift --aug_blend --audio_files_dir={audio_files_dir} \
---labels=True --train --test --prior --levels=3 --level=2 --weight_decay=0.01 --save_iters=1000
-```
-
-For sampling, follow same instructions as [above](#sample-from-new-model) but use `small_labelled_prior` instead of `small_prior`.  
-
-#### Train with lyrics
-To train in addition with lyrics, update `get_metadata` in `data/files_dataset.py` to return `lyrics` too.
-For training with lyrics, we'll use `small_single_enc_dec_prior` in `hparams.py`. 
-- Lyrics: 
-  - For each file, we linearly align the lyric characters to the audio, find the position in lyric that corresponds to 
-  the midpoint of our audio chunk, and pass a window of `n_tokens` lyric characters centred around that. 
-  - In `small_single_enc_dec_prior`, set the hps `use_tokens=True` and `n_tokens` to be the number of lyric characters 
-  to use for an audio chunk. Set it according to the `sample_length` you're training on so that its large enough that 
-  the lyrics for an audio chunk are almost always found inside a window of that size.
-  - If you use a non-English vocabulary, update `text_processor.py` with your new vocab and set
-  `n_vocab = number of characters in vocabulary` accordingly in `small_single_enc_dec_prior`. In v2, we had a `n_vocab=80` 
-  and in v3 we missed `+` and so `n_vocab=79` of characters. 
-
-After these modifications, to train a top-level with labels and lyrics, run
-```
-mpiexec -n {ngpus} python jukebox/train.py --hps=vqvae,small_single_enc_dec_prior,all_fp16,cpu_ema --name=pretrained_vqvae_small_single_enc_dec_prior_labels \
---sample_length=786432 --bs=4 --aug_shift --aug_blend --audio_files_dir={audio_files_dir} \
---labels=True --train --test --prior --levels=3 --level=2 --weight_decay=0.01 --save_iters=1000
-```
-To simplify hps choices, here we used a `single_enc_dec` model like the `1b_lyrics` model that combines both encoder and 
-decoder of the transformer into a single model. We do so by merging the lyric vocab and vq-vae vocab into a single 
-larger vocab, and flattening the lyric tokens and the vq-vae codes into a single sequence of length `n_ctx + n_tokens`. 
-This uses `attn_order=12` which includes `prime_attention` layers with keys/values from lyrics and queries from audio. 
-If you instead want to use a model with the usual encoder-decoder style transformer, use `small_sep_enc_dec_prior`.
-
-For sampling, follow same instructions as [above](#sample-from-new-model) but use `small_single_enc_dec_prior` instead of 
-`small_prior`. To also get the alignment between lyrics and samples in the saved html, you'll need to set `alignment_layer` 
-and `alignment_head` in `small_single_enc_dec_prior`. To find which layer/head is best to use, run a forward pass on a training example,
-save the attention weight tensors for all prime_attention layers, and pick the (layer, head) which has the best linear alignment 
-pattern between the lyrics keys and music queries. 
-
-### Fine-tune pre-trained top-level prior to new style(s)
-Previously, we showed how to train a small top-level prior from scratch. Assuming you have a GPU with at least 15 GB of memory and support for fp16, you could fine-tune from our pre-trained 1B top-level prior. Here are the steps:
-
-- Support `--labels=True` by implementing `get_metadata` in `jukebox/data/files_dataset.py` for your dataset.
-- Add new entries in `jukebox/data/ids`. We recommend replacing existing mappings (e.g. rename `"unknown"`, etc with styles of your choice). This uses the pre-trained style vectors as initialization and could potentially save some compute.
-
-After these modifications, run 
-```
-mpiexec -n {ngpus} python jukebox/train.py --hps=vqvae,prior_1b_lyrics,all_fp16,cpu_ema --name=finetuned \
---sample_length=1048576 --bs=1 --aug_shift --aug_blend --audio_files_dir={audio_files_dir} \
---labels=True --train --test --prior --levels=3 --level=2 --weight_decay=0.01 --save_iters=1000
-```
-To get the best sample quality, it is recommended to anneal the learning rate in the end. Training the 5B top-level requires GPipe which is not supported in this release.
-
-# Citation
-
-Please cite using the following bibtex entry:
-
-```
-@article{dhariwal2020jukebox,
-  title={Jukebox: A Generative Model for Music},
-  author={Dhariwal, Prafulla and Jun, Heewoo and Payne, Christine and Kim, Jong Wook and Radford, Alec and Sutskever, Ilya},
-  journal={arXiv preprint arXiv:2005.00341},
-  year={2020}
-}
-```
 
 # License 
+Check license dependencies on OpenAI/Jukebox
 [Noncommercial Use License](./LICENSE) 
 
 It covers both released code and weights. 
